@@ -3,7 +3,7 @@ Airflow DAG for reading data from S3 and loading into Snowflake with CloudWatch 
 
 This DAG demonstrates:
 - Reading data from S3
-- Transforming data (optional)
+- Transforming data 
 - Loading data into Snowflake
 - CloudWatch metrics and logging
 """
@@ -20,6 +20,8 @@ from airflow.utils.decorators import task
 from airflow.models import Variable
 import boto3
 import logging
+import pandas as pd
+import io
 from botocore.exceptions import ClientError
 
 # Configure logging
@@ -44,16 +46,14 @@ SNOWFLAKE_TABLE = Variable.get("snowflake_table", "customer_data")
 
 # DAG Configuration
 default_args = {
-    "owner": "data-engineering",
-    "depends_on_past": False,
+    "owner": "data-ingestion",
+    "depends_on_past": True,
     "start_date": datetime(2024, 1, 1),
     "email": ["admin@example.com"],
     "email_on_failure": True,
     "email_on_retry": False,
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
-    "pool": "default_pool",
-    "pool_slots": 1,
 }
 
 dag = DAG(
@@ -149,6 +149,20 @@ def validate_data(**context) -> bool:
     try:
         logger.info("Starting data validation")
         # Add custom validation logic here
+        
+        s3_client = boto3.client("s3", region_name="us-east-1")
+        files = context['ti'].xcom_pull(task_ids="check_s3_files")["files"]
+        
+        for key in files:
+            obj = s3_client.get_object(Bucket=S3_BUCKET, Key=key)
+            df = pd.read_csv(io.BytesIO(obj['Body'].read()), nrows=100)  # sample
+            
+            # Example checks
+            if "customer_name" not in df.columns:
+                raise ValueError("Missing column: customer_name")
+            if df["email"].isnull().any():
+                raise ValueError("Null emails found")
+    
         send_cloudwatch_metric("DataValidationStatus", 1)  # 1 = success
         return True
     except Exception as e:

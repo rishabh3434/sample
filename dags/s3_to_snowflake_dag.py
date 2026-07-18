@@ -19,6 +19,7 @@ from airflow.operators.python import PythonOperator
 from airflow.utils.decorators import task
 from airflow.models import Variable
 import boto3
+import json
 import logging
 import pandas as pd
 import io
@@ -27,22 +28,36 @@ from botocore.exceptions import ClientError
 # Configure logging
 logger = logging.getLogger(__name__)
 
+def get_secret(secret_name: str, region_name: str = "us-east-1") -> dict:
+    """
+    Fetch secret from AWS Secrets Manager.
+    """
+    client = boto3.client("secretsmanager", region_name=region_name)
+    response = client.get_secret_value(SecretId=secret_name)
+    secret = response["SecretString"]
+    return json.loads(secret)
+
+# Fetch AWS and Snowflake secrets
+aws_secret = get_secret("aws/airflow/credentials")
+snowflake_secret = get_secret("snowflake/airflow/credentials")
+
+
 # AWS and Snowflake Connection IDs
 AWS_CONN_ID = "aws_default"
 SNOWFLAKE_CONN_ID = "snowflake_default"
 CLOUDWATCH_NAMESPACE = "AirflowDAGs"
 
 # S3 Configuration
-S3_BUCKET = Variable.get("s3_bucket", "my-data-bucket")
-S3_PREFIX = "raw_data/"
+S3_BUCKET = aws_secret["s3_bucket"]
+S3_PREFIX = aws_secret.get("s3_prefix", "raw_data/")   # optional default
 S3_LOCAL_PATH = "/tmp/data/"
 
-# Snowflake Configuration
-SNOWFLAKE_DATABASE = Variable.get("snowflake_database", "analytics_db")
-SNOWFLAKE_SCHEMA = Variable.get("snowflake_schema", "raw")
-SNOWFLAKE_WAREHOUSE = Variable.get("snowflake_warehouse", "compute_wh")
-SNOWFLAKE_ROLE = Variable.get("snowflake_role", "transformer")
-SNOWFLAKE_TABLE = Variable.get("snowflake_table", "customer_data")
+SNOWFLAKE_DATABASE = snowflake_secret["database"]
+SNOWFLAKE_SCHEMA = snowflake_secret["schema"]
+SNOWFLAKE_WAREHOUSE = snowflake_secret["warehouse"]
+SNOWFLAKE_ROLE = snowflake_secret["role"]
+SNOWFLAKE_TABLE = snowflake_secret["table"]
+
 
 # DAG Configuration
 default_args = {
@@ -77,7 +92,7 @@ def send_cloudwatch_metric(metric_name: str, value: float, unit: str = "Count") 
         unit: Unit of measurement (Count, Bytes, Seconds, etc.)
     """
     try:
-        cloudwatch = boto3.client("cloudwatch", region_name="us-east-1")
+        cloudwatch = session.client("cloudwatch")
         cloudwatch.put_metric_data(
             Namespace=CLOUDWATCH_NAMESPACE,
             MetricData=[
@@ -107,7 +122,13 @@ def check_s3_files() -> dict:
         Dictionary containing file information
     """
     try:
-        s3_client = boto3.client("s3", region_name="us-east-1")
+        session = boto3.session.Session(
+            aws_access_key_id=aws_secret["aws_access_key_id"],
+            aws_secret_access_key=aws_secret["aws_secret_access_key"],
+            region_name=aws_secret["region"]
+        )
+        s3_client = session.client("s3")
+
         
         response = s3_client.list_objects_v2(
             Bucket=S3_BUCKET,

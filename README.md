@@ -1,1 +1,1 @@
-This is a sample git repo to sowcase some of my codes
+This is a sample git repo to showcase some of my codes
